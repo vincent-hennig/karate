@@ -23,10 +23,9 @@
  */
 package com.intuit.karate.http;
 
-import com.intuit.karate.FileUtils;
-import com.intuit.karate.JsonUtils;
-import com.intuit.karate.LogAppender;
-import com.intuit.karate.Match;
+import com.intuit.karate.*;
+import com.intuit.karate.core.MockHandler;
+import com.intuit.karate.core.PerfEvent;
 import com.intuit.karate.core.Variable;
 import com.intuit.karate.graal.JsArray;
 import com.intuit.karate.graal.JsEngine;
@@ -54,6 +53,7 @@ import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.ProxyObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.w3c.dom.Node;
 
 /**
  *
@@ -62,6 +62,7 @@ import org.slf4j.LoggerFactory;
 public class ServerContext implements ProxyObject {
 
     private static final Logger logger = LoggerFactory.getLogger(ServerContext.class);
+    private static final ThreadLocal<Request> THREAD_LOCAL_REQUEST = new ThreadLocal<>();
 
     private static final String READ = "read";
     private static final String RESOLVER = "resolver";
@@ -97,11 +98,12 @@ public class ServerContext implements ProxyObject {
     private static final String TYPE_OF = "typeOf";
     private static final String IS_PRIMITIVE = "isPrimitive";
     private static final String MATCH = "match";
+    private static final String PROCEED = "proceed";
 
     private static final String[] KEYS = new String[]{
         READ, RESOLVER, READ_AS_STRING, EVAL, EVAL_WITH, GET, SET, LOG, UUID, REMOVE, REDIRECT, SWITCH, SWITCHED, AJAX, HTTP, NEXT_ID, SESSION_ID,
         INIT, CLOSE, CLOSED, RENDER, BODY_APPEND, COPY, DELAY, TO_STRING, TO_JSON, TO_JS, TO_JSON_PRETTY, FROM_JSON, 
-        CALLER, TEMPLATE, TYPE_OF, IS_PRIMITIVE, MATCH};
+        CALLER, TEMPLATE, TYPE_OF, IS_PRIMITIVE, MATCH, PROCEED};
     private static final Set<String> KEY_SET = new HashSet(Arrays.asList(KEYS));
     private static final JsArray KEY_ARRAY = new JsArray(KEYS);
 
@@ -528,6 +530,53 @@ public class ServerContext implements ProxyObject {
         }
     };
 
+    private final Consumer<String> PROCEED_FUNCTION = requestUrlBase -> {
+        Request currentRequest = getRequest();
+        String urlBase = requestUrlBase == null ? currentRequest.getUrlBase() : requestUrlBase;
+
+        HttpClient client = getConfig().getHttpClientFactory().apply(currentRequest);
+        HttpRequestBuilder requestBuilder = new HttpRequestBuilder(client);
+
+        requestBuilder.url(urlBase)
+                .path(currentRequest.getPath())
+                .params(currentRequest.getParams())
+                .method(currentRequest.getMethod())
+                .setHeaders(currentRequest.getHeaders())
+                .removeHeader(HttpConstants.HDR_CONTENT_LENGTH)
+                .body(currentRequest.getBody());
+        if (requestBuilder.client instanceof ArmeriaHttpClient) {
+            THREAD_LOCAL_REQUEST.set(currentRequest);
+            Request mockRequest = THREAD_LOCAL_REQUEST.get();
+            if (mockRequest != null) {
+                ArmeriaHttpClient armeriaClient = (ArmeriaHttpClient) requestBuilder.client;
+                armeriaClient.setRequestContext(mockRequest.getRequestContext());
+            }
+        }
+        HttpRequest newRequest = requestBuilder.build();
+        try{
+            Response proceedResponse = requestBuilder.client.invoke(newRequest);
+            updateResponseWithProceedResponse(proceedResponse);
+        } catch (Exception e){
+            logger.error("Error occurred while forwarding request to {}", currentRequest.getUrlAndPath());
+            logger.error(e.toString());
+            mockRequestCycle.getResponse().setStatus(500);
+        }
+        requestBuilder.reset();
+    };
+
+    /**
+     *
+     * @param proceedResponse the response from the http call made by PROCEED_FUNCTION
+     */
+    private void updateResponseWithProceedResponse(Response proceedResponse){
+        Response rcResponse = getMockRequestCycle().getResponse();
+        rcResponse.setBody(proceedResponse.getBody());
+        rcResponse.setHeadersAsStringLists(proceedResponse.getHeaders());
+        rcResponse.setContentType(proceedResponse.getContentType());
+        rcResponse.setResourceType(proceedResponse.getResourceType());
+        rcResponse.setStatus(proceedResponse.getStatus());
+    }
+
     @Override
     public Object getMember(String key) {
         switch (key) {
@@ -599,6 +648,8 @@ public class ServerContext implements ProxyObject {
                 return IS_PRIMITIVE_FUNCTION;
             case MATCH:
                 return MATCH_FUNCTION;
+            case PROCEED:
+                return PROCEED_FUNCTION;
             default:
                 logger.warn("no such property on context object: {}", key);
                 return null;

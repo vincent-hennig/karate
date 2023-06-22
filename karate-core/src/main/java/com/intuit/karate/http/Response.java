@@ -235,6 +235,10 @@ public class Response implements ProxyObject {
         });
     }
 
+    public void setHeadersAsStringLists(Map<String, List<String>> newHeaders){
+        this.headers = newHeaders;
+    }
+
     private static String toString(Object o) {
         return o == null ? null : o.toString();
     }

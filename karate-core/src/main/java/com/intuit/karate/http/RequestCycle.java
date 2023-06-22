@@ -173,6 +173,7 @@ public class RequestCycle {
                 return customHandler.get();
             } else if (context.isApi()) {
                 InputStream is = apiResource();
+                context.setMockRequestCycle(this);
                 if (context.isLockNeeded()) {
                     synchronized (config) {
                         engine.eval(is);

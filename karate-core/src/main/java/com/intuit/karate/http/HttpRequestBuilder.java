@@ -368,6 +368,11 @@ public class HttpRequestBuilder implements ProxyObject {
         return header(name, Collections.singletonList(value));
     }
 
+    public HttpRequestBuilder setHeaders(Map<String, List<String>> headers){
+        this.headers = headers;
+        return this;
+    }
+
     public HttpRequestBuilder headers(Map<String, Object> map) {
         map.forEach((k, v) -> {
             if (!k.startsWith(":")) { // strip (armeria) special headers
